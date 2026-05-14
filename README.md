@@ -1,16 +1,6 @@
-# SendByAI (선배)
+# SendByAI
 
 > **한국어 라이브 스트리밍 채팅을 위한 실시간 AI 모더레이션 — Go로 만든 오픈소스.**
-
----
-
-## 이름의 의미
-
-**SendByAI**는 두 가지 의미를 동시에 담고 있습니다.
-
-표면적으로는 시스템이 하는 일 그 자체입니다: 모든 채팅 메시지는 AI에 의해(*sent by*) — AI의 검토를 거쳐 — 시청자에게 전달됩니다.
-
-그리고 한국어로는 **선배**가 들립니다. 뒤에 오는 사람을 이끌고 지켜주는 존재. 이 프로젝트가 지향하는 모습입니다 — 대화 속에 조용히 함께하며, 좋은 말은 통과시키고 해로운 말은 걸러내는 AI 선배.
 
 ---
 
@@ -38,8 +28,7 @@ WebSocket 클라이언트
 │              Filter Chain                    │
 │                                             │
 │  Step 1 │ kor_unsmile ONNX 분류기 (현재)    │
-│  Step 2 │ Passthrough (통과)               │
-│  Step 3 │ Ollama / Llama 3 심층 추론         │  ◄── 예정
+│  Step 2 │ Ollama / Llama 3 심층 추론         │  ◄── 예정
 └─────────────────────────────────────────────┘
       │
       ▼
@@ -48,12 +37,12 @@ WebSocket 클라이언트
 
 각 필터는 네 가지 결정 중 하나를 반환합니다:
 
-| 결정 | 효과 |
-|---|---|
-| `Allow` | 다음 필터로 통과 |
-| `Replace` | 정제된 내용으로 교체 후 계속 |
+| 결정         | 효과                          |
+| ------------ | ----------------------------- |
+| `Allow`      | 다음 필터로 통과              |
+| `Replace`    | 정제된 내용으로 교체 후 계속  |
 | `Quarantine` | 수동 검토 대기; 발신자 미통보 |
-| `Block` | 메시지 즉시 삭제 |
+| `Block`      | 메시지 즉시 삭제              |
 
 ---
 
@@ -65,18 +54,18 @@ WebSocket 클라이언트
 - **아키텍처:** `BertForSequenceClassification`
 - **분류:** 10개 레이블 (멀티 라벨)
 
-| 레이블 | 설명 |
-|---|---|
+| 레이블    | 설명                   |
+| --------- | ---------------------- |
 | 여성/가족 | 여성 및 가족 대상 혐오 |
-| 남성 | 남성 대상 혐오 |
-| 성소수자 | 성소수자 대상 혐오 |
-| 인종/국적 | 인종·국적 대상 혐오 |
-| 연령 | 나이 관련 혐오 |
-| 지역 | 지역 감정 |
-| 종교 | 종교 대상 혐오 |
-| 기타 혐오 | 기타 혐오 표현 |
-| 악플/욕설 | 욕설·악성 댓글 |
-| 클린 | 정상 발언 |
+| 남성      | 남성 대상 혐오         |
+| 성소수자  | 성소수자 대상 혐오     |
+| 인종/국적 | 인종·국적 대상 혐오    |
+| 연령      | 나이 관련 혐오         |
+| 지역      | 지역 감정              |
+| 종교      | 종교 대상 혐오         |
+| 기타 혐오 | 기타 혐오 표현         |
+| 악플/욕설 | 욕설·악성 댓글         |
+| 클린      | 정상 발언              |
 
 **점수 계산:** `hate_score = 1 - P(클린)`. 점수 ≥ 0.7 → Block, ≥ 0.4 → Quarantine.
 
@@ -99,7 +88,6 @@ SendByAI/
 │   └── filter/
 │       ├── filter.go            # Filter 인터페이스 + Action 열거형
 │       ├── chain.go             # 순차 파이프라인 (short-circuit 지원)
-│       ├── passthrough.go       # no-op 필터
 │       └── unsmile.go           # kor_unsmile ONNX 필터
 ├── models/
 │   ├── kor_unsmile.onnx         # 변환된 ONNX 모델
@@ -124,13 +112,6 @@ brew install onnxruntime
 make fetch-libs
 ```
 
-### 모델 준비 (이미 완료된 경우 생략)
-
-```bash
-pip install transformers torch onnx onnxruntime
-python scripts/export_onnx.py
-```
-
 ### 빌드 및 실행
 
 ```bash
@@ -140,12 +121,12 @@ make run     # 빌드 후 :8080에서 실행
 
 ### 환경 변수
 
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `ADDR` | `:8080` | 서버 수신 주소 |
-| `UNSMILE_ONNX_PATH` | `models/kor_unsmile.onnx` | ONNX 모델 경로 |
-| `UNSMILE_TOKENIZER_PATH` | `models/tokenizer/tokenizer.json` | 토크나이저 경로 |
-| `ORT_LIB` | `/opt/homebrew/lib/libonnxruntime.dylib` | ONNX Runtime 라이브러리 경로 |
+| 변수                     | 기본값                                   | 설명                         |
+| ------------------------ | ---------------------------------------- | ---------------------------- |
+| `ADDR`                   | `:8080`                                  | 서버 수신 주소               |
+| `UNSMILE_ONNX_PATH`      | `models/kor_unsmile.onnx`                | ONNX 모델 경로               |
+| `UNSMILE_TOKENIZER_PATH` | `models/tokenizer/tokenizer.json`        | 토크나이저 경로              |
+| `ORT_LIB`                | `/opt/homebrew/lib/libonnxruntime.dylib` | ONNX Runtime 라이브러리 경로 |
 
 ### 접속 테스트
 

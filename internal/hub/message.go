@@ -14,13 +14,17 @@ type InboundMessage struct {
 // OutboundMessage is a filtered, broadcast-ready message.
 // Type values:
 //
-//	"message" — normal chat message
-//	"warn"    — message was sent but flagged as suspicious (quarantine confirmed)
-//	"delete"  — message was sent optimistically but must be retracted (block)
+//	"message"    — normal chat message
+//	"warn"       — message flagged as suspicious; shown immediately on quarantine
+//	"clear_warn" — ollama cleared the warning (allow verdict); remove warning UI
+//	"delete"     — retract message from chat (ollama block verdict)
+//	"block"      — message blocked before broadcast; sent only to the originating client
 type OutboundMessage struct {
 	Type    string    `json:"type"`
-	MsgID   string    `json:"msg_id"`
+	MsgID   string    `json:"msg_id,omitempty"`
 	UserID  string    `json:"user_id,omitempty"`
 	Content string    `json:"content,omitempty"`
 	At      time.Time `json:"at,omitempty"`
+	Reason  string    `json:"reason,omitempty"`
+	Score   float64   `json:"score,omitempty"`
 }

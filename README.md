@@ -27,14 +27,16 @@ WebSocket 클라이언트
   Step 1 │ kor_unsmile ONNX 분류기 (동기)
          │   Block(≥0.7)         → sendToClient {type:"block", reason, score}  ← 발신자에게만
          │   Allow(<0.4)         → broadcast {type:"message", msg_id, ...}
-         │   Quarantine(0.4~0.7) → broadcast {type:"message", msg_id, ...} + Step 3 비동기
+         │   Quarantine(0.4~0.7) → broadcast {type:"message", msg_id, ...}
+         │                          broadcast {type:"warn", msg_id, score, reason}  ← 즉시 경고
+         │                          + Step 3 비동기 실행
       │
       ▼  (Step 3 goroutine — Quarantine 메시지만)
   Step 3 │ Ollama LLM 심층 재판단
          │   맥락·풍자 판단 후 최종 판정:
          │
-         ├── allow      → 아무 이벤트 없음 (이미 표시된 메시지 유지)
-         ├── quarantine → broadcast {type:"warn",   msg_id, user_id, reason, score}
+         ├── allow      → broadcast {type:"clear_warn", msg_id}  ← 경고 해제
+         ├── quarantine → 아무 이벤트 없음 (warn 유지)
          └── block      → broadcast {type:"delete", msg_id, user_id, reason, score}
 ```
 
@@ -202,17 +204,20 @@ websocat "ws://localhost:8080/ws?user_id=alice&room_id=room1"
 **클라이언트가 수신하는 이벤트 형식:**
 
 ```jsonc
-// 일반 메시지 (Allow 또는 낙관적 브로드캐스트) — 전체 브로드캐스트
+// 일반 메시지 — 전체 브로드캐스트
 { "type": "message", "msg_id": "a1b2c3d4", "user_id": "alice", "content": "...", "at": "..." }
 
-// Step 1 → block: 발신자에게만 전송 (다른 클라이언트는 수신 안 함)
+// Step 1 → block: 발신자에게만 전송
 { "type": "block", "reason": "욕설 탐지", "score": 0.92 }
 
-// Step 3 → quarantine: 이미 표시된 메시지에 경고 표시 — 전체 브로드캐스트
-{ "type": "warn", "msg_id": "a1b2c3d4", "user_id": "alice", "reason": "특정 지역 집단을 부정적으로 일반화하는 표현입니다.", "score": 0.54 }
+// Step 1 → quarantine: message와 동시에 즉시 전송 — 전체 브로드캐스트
+{ "type": "warn", "msg_id": "a1b2c3d4", "user_id": "alice", "reason": "...", "score": 0.54 }
 
-// Step 3 → block: 이미 표시된 메시지를 채팅에서 제거 — 전체 브로드캐스트
-{ "type": "delete", "msg_id": "a1b2c3d4", "user_id": "alice", "reason": "노인 비하 신조어를 사용한 명확한 혐오 표현입니다.", "score": 1.0 }
+// Step 3 → allow: warn 해제 — 전체 브로드캐스트
+{ "type": "clear_warn", "msg_id": "a1b2c3d4", "user_id": "alice" }
+
+// Step 3 → block: 메시지 제거 — 전체 브로드캐스트
+{ "type": "delete", "msg_id": "a1b2c3d4", "user_id": "alice", "reason": "...", "score": 1.0 }
 ```
 
 **서버 로그 키워드:**
@@ -228,14 +233,14 @@ websocat "ws://localhost:8080/ws?user_id=alice&room_id=room1"
 
 **판정 기준 예시:**
 
-| 입력 예시                      | unsmile score | 브로드캐스트 | Ollama 재판단 | 최종 이벤트                         |
-| ------------------------------ | ------------- | ------------ | ------------- | ----------------------------------- |
-| `안녕하세요`                   | 0.10          | `message`    | —             | —                                   |
-| `나이 많은 사람들은 고집이 세` | 0.54          | `message`    | quarantine    | `warn` (전체)                       |
-| `그 동네 사람들은 좀 그래`     | 0.41          | `message`    | quarantine    | `warn` (전체)                       |
-| `오늘 버스에서 할아버지가 …`   | 0.43          | `message`    | allow         | —                                   |
-| `급식충`                       | 0.92          | —            | —             | `block` (발신자만)                  |
-| `틀딱`                         | 0.85          | —            | —             | `block` (발신자만)                  |
+| 입력 예시                      | unsmile score | Step 1 이벤트              | Ollama 재판단 | Step 3 이벤트       |
+| ------------------------------ | ------------- | -------------------------- | ------------- | ------------------- |
+| `안녕하세요`                   | 0.10          | `message`                  | —             | —                   |
+| `나이 많은 사람들은 고집이 세` | 0.54          | `message` + `warn`         | quarantine    | — (warn 유지)       |
+| `그 동네 사람들은 좀 그래`     | 0.41          | `message` + `warn`         | quarantine    | — (warn 유지)       |
+| `오늘 버스에서 할아버지가 …`   | 0.43          | `message` + `warn`         | allow         | `clear_warn`        |
+| `급식충`                       | 0.92          | `block` (발신자만)         | —             | —                   |
+| `틀딱`                         | 0.85          | `block` (발신자만)         | —             | —                   |
 
 ---
 

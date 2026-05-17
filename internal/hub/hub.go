@@ -114,6 +114,11 @@ func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 		slog.Info("message blocked (fast)",
 			"user", msg.UserID, "room", msg.RoomID,
 			"reason", result.Reason, "score", result.Score)
+		h.sendToClient(msg.ClientID, &OutboundMessage{
+			Type:   "block",
+			Reason: result.Reason,
+			Score:  result.Score,
+		})
 		return
 
 	case filter.ActionAllow, filter.ActionReplace:
@@ -140,14 +145,22 @@ func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 		fMsg.Meta["quarantine_reason"] = result.Reason
 		fMsg.Meta["quarantine_score"] = result.Score
 
-		out := &OutboundMessage{
+		h.broadcast(msg.RoomID, &OutboundMessage{
 			Type:    "message",
 			MsgID:   msgID,
 			UserID:  msg.UserID,
 			Content: msg.Content,
 			At:      msg.At,
-		}
-		h.broadcast(msg.RoomID, out)
+		})
+		// Immediately warn clients — unsmile already flagged this as suspicious.
+		// Ollama will clear or escalate asynchronously.
+		h.broadcast(msg.RoomID, &OutboundMessage{
+			Type:   "warn",
+			MsgID:  msgID,
+			UserID: msg.UserID,
+			Reason: result.Reason,
+			Score:  result.Score,
+		})
 
 		// Stage 2: async deep judgment
 		go h.deepJudge(ctx, msg.RoomID, msg.UserID, msgID, fMsg)
@@ -167,20 +180,42 @@ func (h *Hub) deepJudge(ctx context.Context, roomID, userID, msgID string, fMsg 
 
 	switch result.Action {
 	case filter.ActionAllow:
-		slog.Info("deep filter: allow (no action needed)",
+		slog.Info("deep filter: allow — clearing warn",
 			"user", fMsg.UserID, "msg_id", msgID, "reason", result.Reason)
+		h.broadcast(roomID, &OutboundMessage{Type: "clear_warn", MsgID: msgID, UserID: userID})
 
 	case filter.ActionBlock:
 		slog.Info("deep filter: block — retracting message",
 			"user", fMsg.UserID, "room", roomID,
 			"msg_id", msgID, "reason", result.Reason, "score", result.Score)
-		h.broadcast(roomID, &OutboundMessage{Type: "delete", MsgID: msgID, UserID: userID})
+		h.broadcast(roomID, &OutboundMessage{Type: "delete", MsgID: msgID, UserID: userID, Reason: result.Reason, Score: result.Score})
 
 	default: // quarantine
 		slog.Info("deep filter: quarantine — warning clients",
 			"user", fMsg.UserID, "room", roomID,
 			"msg_id", msgID, "reason", result.Reason)
-		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID, UserID: userID})
+		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID, UserID: userID, Reason: result.Reason, Score: result.Score})
+	}
+}
+
+// sendToClient sends a message to a single client by its internal client ID.
+func (h *Hub) sendToClient(clientID string, out *OutboundMessage) {
+	raw, err := json.Marshal(out)
+	if err != nil {
+		slog.Error("marshal sendToClient message", "err", err)
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, room := range h.rooms {
+		if c, ok := room[clientID]; ok {
+			select {
+			case c.send <- raw:
+			default:
+				slog.Warn("slow client, block notification dropped", "client", clientID)
+			}
+			return
+		}
 	}
 }
 

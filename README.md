@@ -208,10 +208,10 @@ websocat "ws://localhost:8080/ws?user_id=alice&room_id=room1"
 { "type": "message", "msg_id": "a1b2c3d4", "user_id": "alice", "content": "...", "at": "..." }
 
 // Step 3 → quarantine: 이미 표시된 메시지에 경고 표시
-{ "type": "warn",   "msg_id": "a1b2c3d4" }
+{ "type": "warn",   "msg_id": "a1b2c3d4", "user_id": "alice" }
 
 // Step 3 → block: 이미 표시된 메시지를 채팅에서 제거
-{ "type": "delete", "msg_id": "a1b2c3d4" }
+{ "type": "delete", "msg_id": "a1b2c3d4", "user_id": "alice" }
 ```
 
 **서버 로그 키워드:**

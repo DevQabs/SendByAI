@@ -150,18 +150,18 @@ func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 		h.broadcast(msg.RoomID, out)
 
 		// Stage 2: async deep judgment
-		go h.deepJudge(ctx, msg.RoomID, msgID, fMsg)
+		go h.deepJudge(ctx, msg.RoomID, msg.UserID, msgID, fMsg)
 	}
 }
 
 // deepJudge calls the deep filter on a previously quarantined message and
 // broadcasts a warn or delete event based on the verdict.
-func (h *Hub) deepJudge(ctx context.Context, roomID, msgID string, fMsg *filter.Message) {
+func (h *Hub) deepJudge(ctx context.Context, roomID, userID, msgID string, fMsg *filter.Message) {
 	result, err := h.deepFilter.Filter(ctx, fMsg)
 	if err != nil {
 		slog.Warn("deep filter error, treating as quarantine",
 			"user", fMsg.UserID, "msg_id", msgID, "err", err)
-		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID})
+		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID, UserID: userID})
 		return
 	}
 
@@ -174,13 +174,13 @@ func (h *Hub) deepJudge(ctx context.Context, roomID, msgID string, fMsg *filter.
 		slog.Info("deep filter: block — retracting message",
 			"user", fMsg.UserID, "room", roomID,
 			"msg_id", msgID, "reason", result.Reason, "score", result.Score)
-		h.broadcast(roomID, &OutboundMessage{Type: "delete", MsgID: msgID})
+		h.broadcast(roomID, &OutboundMessage{Type: "delete", MsgID: msgID, UserID: userID})
 
 	default: // quarantine
 		slog.Info("deep filter: quarantine — warning clients",
 			"user", fMsg.UserID, "room", roomID,
 			"msg_id", msgID, "reason", result.Reason)
-		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID})
+		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID, UserID: userID})
 	}
 }
 

@@ -277,12 +277,9 @@ h := hub.New(unsmile, &MyDeepFilter{})
 
 ---
 
-## 로드맵
+## 샘플
 
-- [x] **Step 1** — WebSocket 서버 + 확장 가능한 필터 파이프라인
-- [x] **Step 2** — [`smilegate-ai/kor_unsmile`](https://huggingface.co/smilegate-ai/kor_unsmile) ONNX 한국어 혐오 발언 분류기
-- [x] **Step 3** — Ollama LLM 심층 재판단 레이어 (풍자·맥락 판단, `qwen2.5:7b` 기본)
-- [x] **낙관적 브로드캐스트** — Quarantine 메시지 즉시 전송 후 Ollama 비동기 재판단; 결과에 따라 `warn` / `delete` 이벤트 발행
+<video src="https://github.com/user-attachments/assets/fc7d2f8c-9e64-4b58-b551-95610753d346" controls width="100%"></video>
 
 ---
 

@@ -3,6 +3,8 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -12,7 +14,12 @@ import (
 )
 
 // Hub is the central broker: it registers/unregisters clients and drives
-// every message through the filter chain before broadcasting.
+// every message through the filter pipeline before broadcasting.
+//
+// Two-stage pipeline:
+//  1. fastFilter (e.g. ONNX classifier) — blocks synchronously before send
+//  2. deepFilter (e.g. Ollama LLM) — runs async after optimistic broadcast
+//     for messages that the fast filter quarantined
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[string]map[string]*Client // roomID → clientID → *Client
@@ -21,22 +28,25 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 
-	chain *filter.Chain
+	fastFilter filter.Filter // runs before broadcast; block/allow decisions are final
+	deepFilter filter.Filter // re-judges quarantined messages after optimistic broadcast
 }
 
-// New creates a Hub with the provided filter chain.
-func New(chain *filter.Chain) *Hub {
+// New creates a Hub.
+// fast: synchronous pre-broadcast filter (e.g. unsmile ONNX)
+// deep: async post-broadcast filter for quarantined messages (e.g. Ollama)
+func New(fast, deep filter.Filter) *Hub {
 	return &Hub{
 		rooms:      make(map[string]map[string]*Client),
 		inbound:    make(chan *InboundMessage, 512),
 		register:   make(chan *Client, 64),
 		unregister: make(chan *Client, 64),
-		chain:      chain,
+		fastFilter: fast,
+		deepFilter: deep,
 	}
 }
 
 // Run is the hub event loop. Call it in a dedicated goroutine.
-// It exits when ctx is cancelled.
 func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
@@ -47,8 +57,6 @@ func (h *Hub) Run(ctx context.Context) {
 		case c := <-h.unregister:
 			h.removeClient(c)
 		case msg := <-h.inbound:
-			// Each message processed in its own goroutine so slow AI filters
-			// (Step 2 / Step 3) never stall the event loop.
 			go h.process(ctx, msg)
 		}
 	}
@@ -77,8 +85,17 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	go c.readPump()
 }
 
-// process runs a single message through the filter chain then broadcasts.
-// Runs in its own goroutine — safe to block on slow AI inference.
+// process runs the two-stage moderation pipeline.
+//
+// Stage 1 (fast, synchronous):
+//   - Allow  → broadcast immediately
+//   - Block  → drop silently
+//   - Quarantine → broadcast optimistically with a msg_id, then stage 2
+//
+// Stage 2 (deep, async — only for quarantined messages):
+//   - Allow      → no-op (already visible)
+//   - Quarantine → broadcast warn{msg_id}
+//   - Block      → broadcast delete{msg_id}
 func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 	fMsg := &filter.Message{
 		RoomID:  msg.RoomID,
@@ -86,32 +103,85 @@ func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 		Content: msg.Content,
 	}
 
-	result, err := h.chain.Filter(ctx, fMsg)
+	result, err := h.fastFilter.Filter(ctx, fMsg)
 	if err != nil {
-		slog.Error("filter pipeline error", "user", msg.UserID, "err", err)
+		slog.Error("fast filter error", "user", msg.UserID, "err", err)
 		return
 	}
 
 	switch result.Action {
 	case filter.ActionBlock:
-		slog.Info("message blocked",
+		slog.Info("message blocked (fast)",
 			"user", msg.UserID, "room", msg.RoomID,
 			"reason", result.Reason, "score", result.Score)
 		return
+
+	case filter.ActionAllow, filter.ActionReplace:
+		out := &OutboundMessage{
+			Type:    "message",
+			MsgID:   newMsgID(),
+			UserID:  result.Message.UserID,
+			Content: result.Message.Content,
+			At:      msg.At,
+		}
+		h.broadcast(msg.RoomID, out)
+
 	case filter.ActionQuarantine:
-		slog.Info("message quarantined",
+		msgID := newMsgID()
+		slog.Info("message quarantined (fast), broadcasting optimistically",
 			"user", msg.UserID, "room", msg.RoomID,
-			"score", result.Score)
-		// TODO Step 2/3: forward to quarantine store / admin dashboard
+			"msg_id", msgID, "score", result.Score, "reason", result.Reason)
+
+		// Stage 1 quarantine: propagate signal for deep filter
+		if fMsg.Meta == nil {
+			fMsg.Meta = make(map[string]any)
+		}
+		fMsg.Meta["quarantined"] = true
+		fMsg.Meta["quarantine_reason"] = result.Reason
+		fMsg.Meta["quarantine_score"] = result.Score
+
+		out := &OutboundMessage{
+			Type:    "message",
+			MsgID:   msgID,
+			UserID:  msg.UserID,
+			Content: msg.Content,
+			At:      msg.At,
+		}
+		h.broadcast(msg.RoomID, out)
+
+		// Stage 2: async deep judgment
+		go h.deepJudge(ctx, msg.RoomID, msgID, fMsg)
+	}
+}
+
+// deepJudge calls the deep filter on a previously quarantined message and
+// broadcasts a warn or delete event based on the verdict.
+func (h *Hub) deepJudge(ctx context.Context, roomID, msgID string, fMsg *filter.Message) {
+	result, err := h.deepFilter.Filter(ctx, fMsg)
+	if err != nil {
+		slog.Warn("deep filter error, treating as quarantine",
+			"user", fMsg.UserID, "msg_id", msgID, "err", err)
+		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID})
 		return
 	}
 
-	out := &OutboundMessage{
-		UserID:  result.Message.UserID,
-		Content: result.Message.Content,
-		At:      msg.At,
+	switch result.Action {
+	case filter.ActionAllow:
+		slog.Info("deep filter: allow (no action needed)",
+			"user", fMsg.UserID, "msg_id", msgID, "reason", result.Reason)
+
+	case filter.ActionBlock:
+		slog.Info("deep filter: block — retracting message",
+			"user", fMsg.UserID, "room", roomID,
+			"msg_id", msgID, "reason", result.Reason, "score", result.Score)
+		h.broadcast(roomID, &OutboundMessage{Type: "delete", MsgID: msgID})
+
+	default: // quarantine
+		slog.Info("deep filter: quarantine — warning clients",
+			"user", fMsg.UserID, "room", roomID,
+			"msg_id", msgID, "reason", result.Reason)
+		h.broadcast(roomID, &OutboundMessage{Type: "warn", MsgID: msgID})
 	}
-	h.broadcast(msg.RoomID, out)
 }
 
 func (h *Hub) broadcast(roomID string, out *OutboundMessage) {
@@ -129,7 +199,6 @@ func (h *Hub) broadcast(roomID string, out *OutboundMessage) {
 		select {
 		case c.send <- raw:
 		default:
-			// Slow consumer — drop to avoid blocking the broadcast loop.
 			slog.Warn("slow client, message dropped", "client", c.id)
 		}
 	}
@@ -160,4 +229,10 @@ func (h *Hub) removeClient(c *Client) {
 		delete(h.rooms, c.roomID)
 	}
 	slog.Info("client left", "client", c.id, "user", c.userID, "room", c.roomID)
+}
+
+func newMsgID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

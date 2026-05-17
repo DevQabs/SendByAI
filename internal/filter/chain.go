@@ -19,17 +19,36 @@ func NewChain(filters ...Filter) *Chain {
 
 func (c *Chain) Filter(ctx context.Context, msg *Message) (*Result, error) {
 	current := msg
+	var pendingQuarantine *Result
+
 	for _, f := range c.filters {
 		result, err := f.Filter(ctx, current)
 		if err != nil {
 			return nil, fmt.Errorf("filter %q: %w", f.Name(), err)
 		}
 		switch result.Action {
-		case ActionBlock, ActionQuarantine:
+		case ActionBlock:
 			return result, nil
+		case ActionQuarantine:
+			pendingQuarantine = result
+			// propagate quarantine signal so downstream filters can re-judge
+			if current.Meta == nil {
+				current.Meta = make(map[string]any)
+			}
+			current.Meta["quarantined"] = true
+			current.Meta["quarantine_reason"] = result.Reason
+			current.Meta["quarantine_score"] = result.Score
+		case ActionAllow:
+			pendingQuarantine = nil // downstream filter cleared the quarantine
+			current = result.Message
 		case ActionReplace:
+			pendingQuarantine = nil
 			current = result.Message
 		}
+	}
+
+	if pendingQuarantine != nil {
+		return pendingQuarantine, nil
 	}
 	return &Result{Action: ActionAllow, Message: current}, nil
 }

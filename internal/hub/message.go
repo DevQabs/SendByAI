@@ -12,8 +12,15 @@ type InboundMessage struct {
 }
 
 // OutboundMessage is a filtered, broadcast-ready message.
+// Type values:
+//
+//	"message" — normal chat message
+//	"warn"    — message was sent but flagged as suspicious (quarantine confirmed)
+//	"delete"  — message was sent optimistically but must be retracted (block)
 type OutboundMessage struct {
-	UserID  string    `json:"user_id"`
-	Content string    `json:"content"`
-	At      time.Time `json:"at"`
+	Type    string    `json:"type"`
+	MsgID   string    `json:"msg_id"`
+	UserID  string    `json:"user_id,omitempty"`
+	Content string    `json:"content,omitempty"`
+	At      time.Time `json:"at,omitempty"`
 }

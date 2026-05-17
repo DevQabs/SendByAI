@@ -24,25 +24,30 @@ WebSocket 클라이언트
       │
       │  (메시지당 goroutine)
       ▼
-┌─────────────────────────────────────────────┐
-│              Filter Chain                    │
-│                                             │
-│  Step 1 │ kor_unsmile ONNX 분류기 (현재)    │
-│  Step 2 │ Ollama / Llama 3 심층 추론         │  ◄── 예정
-└─────────────────────────────────────────────┘
+  Step 1 │ kor_unsmile ONNX 분류기 (동기)
+         │   Block(≥0.7)         → 즉시 차단, 전송 안 함
+         │   Allow(<0.4)         → 즉시 브로드캐스트
+         │   Quarantine(0.4~0.7) → 낙관적 브로드캐스트 후 Step 3 비동기 실행
       │
-      ▼
-  broadcast → room의 모든 클라이언트
+      ├──► broadcast {type:"message", msg_id, ...}  ← 클라이언트가 즉시 표시
+      │
+      ▼  (Step 3 goroutine)
+  Step 3 │ Ollama LLM 심층 재판단
+         │   맥락·풍자 판단 후 최종 판정:
+         │
+         ├── allow      → 아무 이벤트 없음 (이미 표시된 메시지 유지)
+         ├── quarantine → broadcast {type:"warn",   msg_id}  → ⚠️ 경고 표시
+         └── block      → broadcast {type:"delete", msg_id}  → 메시지 제거
 ```
 
 각 필터는 네 가지 결정 중 하나를 반환합니다:
 
-| 결정         | 효과                          |
-| ------------ | ----------------------------- |
-| `Allow`      | 다음 필터로 통과              |
-| `Replace`    | 정제된 내용으로 교체 후 계속  |
-| `Quarantine` | 수동 검토 대기; 발신자 미통보 |
-| `Block`      | 메시지 즉시 삭제              |
+| 결정         | 효과                                                  |
+| ------------ | ----------------------------------------------------- |
+| `Allow`      | 다음 필터로 통과                                      |
+| `Replace`    | 정제된 내용으로 교체 후 계속                          |
+| `Quarantine` | 낙관적 브로드캐스트 후 Ollama 비동기 재판단 트리거    |
+| `Block`      | 메시지 즉시 차단 (전송 안 함, 또는 이미 전송된 경우 클라이언트에서 삭제) |
 
 ---
 
@@ -71,6 +76,14 @@ WebSocket 클라이언트
 
 모델은 ONNX로 변환되어 `models/kor_unsmile.onnx`에 저장됩니다.
 
+### Ollama LLM (Step 3)
+
+kor_unsmile이 Quarantine으로 표시한 경계선 메시지만 재판단합니다. Step 1 이후 **비동기**로 실행되므로 메시지는 판단 전에 이미 클라이언트에 표시됩니다.
+
+- **기본 모델:** `qwen2.5:7b` (한국어 강세, Intel/AMD CPU에서 실용적 속도)
+- **판단 형식:** 근거 한 문장 + 최종 판정 (allow / quarantine / block)
+- **실패 시 동작:** Ollama 응답 없으면 `warn` 이벤트 전송 (fail-safe)
+
 ---
 
 ## 프로젝트 구조
@@ -88,7 +101,8 @@ SendByAI/
 │   └── filter/
 │       ├── filter.go            # Filter 인터페이스 + Action 열거형
 │       ├── chain.go             # 순차 파이프라인 (short-circuit 지원)
-│       └── unsmile.go           # kor_unsmile ONNX 필터
+│       ├── unsmile.go           # kor_unsmile ONNX 필터
+│       └── ollama.go            # Ollama LLM 재판단 필터
 ├── models/
 │   ├── kor_unsmile.onnx         # 변환된 ONNX 모델
 │   └── tokenizer/               # HuggingFace 토크나이저 파일
@@ -105,18 +119,54 @@ SendByAI/
 ### 사전 요구사항
 
 ```bash
-# macOS
+# Go 1.22+
+go version
+
+# ONNX Runtime (macOS)
 brew install onnxruntime
+
+# Ollama — https://ollama.com 에서 설치 후:
+ollama pull qwen2.5:7b
 
 # libtokenizers.a (이미 포함) — 재다운로드 필요 시:
 make fetch-libs
+
+# WebSocket 테스트 클라이언트 (선택)
+brew install websocat
+```
+
+### ORT_LIB 경로 확인
+
+brew 설치 위치는 칩에 따라 다릅니다:
+
+```bash
+# Apple Silicon (M1/M2/M3)
+ls /opt/homebrew/lib/libonnxruntime.dylib
+
+# Intel Mac
+ls /usr/local/lib/libonnxruntime.dylib
+```
+
+없으면 직접 찾기:
+
+```bash
+find /opt /usr/local -name "libonnxruntime.dylib" 2>/dev/null
 ```
 
 ### 빌드 및 실행
 
 ```bash
-make build   # → bin/sendbyai
-make run     # 빌드 후 :8080에서 실행
+# Apple Silicon
+make run
+
+# Intel Mac (또는 경로가 다를 경우)
+make run ORT_LIB=/usr/local/lib/libonnxruntime.dylib
+```
+
+서버 시작 시 아래 로그가 출력됩니다:
+
+```
+INFO SendByAI listening addr=:8080
 ```
 
 ### 환경 변수
@@ -127,16 +177,64 @@ make run     # 빌드 후 :8080에서 실행
 | `UNSMILE_ONNX_PATH`      | `models/kor_unsmile.onnx`                | ONNX 모델 경로               |
 | `UNSMILE_TOKENIZER_PATH` | `models/tokenizer/tokenizer.json`        | 토크나이저 경로              |
 | `ORT_LIB`                | `/opt/homebrew/lib/libonnxruntime.dylib` | ONNX Runtime 라이브러리 경로 |
+| `OLLAMA_URL`             | `http://localhost:11434`                 | Ollama 서버 주소             |
+| `OLLAMA_MODEL`           | `qwen2.5:7b`                             | Ollama 사용 모델             |
 
-### 접속 테스트
+### 동작 테스트
+
+**헬스 체크:**
 
 ```bash
-# WebSocket 클라이언트로 접속
-ws://localhost:8080/ws?user_id=alice&room_id=room1
-
-# 헬스 체크
 curl http://localhost:8080/health
+# 200 OK 반환 시 정상
 ```
+
+**WebSocket 연결** (`user_id`, `room_id` 필수):
+
+```bash
+websocat "ws://localhost:8080/ws?user_id=alice&room_id=room1"
+```
+
+연결 후 JSON 형식으로 메시지 전송:
+
+```json
+{ "content": "안녕하세요" }
+```
+
+**클라이언트가 수신하는 이벤트 형식:**
+
+```jsonc
+// 일반 메시지 (Allow 또는 낙관적 브로드캐스트)
+{ "type": "message", "msg_id": "a1b2c3d4", "user_id": "alice", "content": "...", "at": "..." }
+
+// Step 3 → quarantine: 이미 표시된 메시지에 경고 표시
+{ "type": "warn",   "msg_id": "a1b2c3d4" }
+
+// Step 3 → block: 이미 표시된 메시지를 채팅에서 제거
+{ "type": "delete", "msg_id": "a1b2c3d4" }
+```
+
+**서버 로그 키워드:**
+
+| 로그 키워드                                      | 의미                                   |
+| ------------------------------------------------ | -------------------------------------- |
+| (로그 없음)                                      | Allow — 정상 메시지                    |
+| `message quarantined (fast), broadcasting optimistically` | Step 1 Quarantine, 낙관적 전송 후 Step 3 대기 |
+| `deep filter: allow`                             | Ollama → 정상 확정, 추가 이벤트 없음   |
+| `deep filter: quarantine — warning clients`      | Ollama → 보류 확정, `warn` 이벤트 전송 |
+| `deep filter: block — retracting message`        | Ollama → 혐오 확정, `delete` 이벤트 전송 |
+| `message blocked (fast)`                         | Step 1에서 즉시 차단 (전송 안 됨)      |
+
+**판정 기준 예시:**
+
+| 입력 예시                      | unsmile score | 낙관적 전송 | Ollama 재판단 | 클라이언트 이벤트       |
+| ------------------------------ | ------------- | ----------- | ------------- | ----------------------- |
+| `안녕하세요`                   | 0.10          | message     | —             | —                       |
+| `나이 많은 사람들은 고집이 세` | 0.54          | message     | quarantine    | `warn`                  |
+| `그 동네 사람들은 좀 그래`     | 0.41          | message     | quarantine    | `warn`                  |
+| `오늘 버스에서 할아버지가 …`   | 0.43          | message     | allow         | —                       |
+| `급식충`                       | 0.92          | —           | —             | (전송 안 됨)            |
+| `틀딱`                         | 0.85          | —           | —             | (전송 안 됨)            |
 
 ---
 
@@ -156,16 +254,20 @@ func (f *MyFilter) Filter(ctx context.Context, msg *filter.Message) (*filter.Res
 }
 ```
 
-`cmd/server/main.go`의 체인에 추가:
+**Step 1 (동기 fast filter)로 추가** — `filter.NewChain`으로 묶어서 전달:
 
 ```go
-chain := filter.NewChain(
-    unsmile,
-    &MyFilter{...},  // ← 여기
-)
+fastChain := filter.NewChain(unsmile, &MyFilter{})
+h := hub.New(fastChain, ollama)
 ```
 
-Hub 코드 수정 불필요.
+**Step 3 (비동기 deep filter)로 교체** — `hub.New`의 두 번째 인자:
+
+```go
+h := hub.New(unsmile, &MyDeepFilter{})
+```
+
+`hub.New(fast, deep filter.Filter)` — 두 인자 모두 `filter.Filter` 인터페이스를 구현하면 됨.
 
 ---
 
@@ -173,9 +275,8 @@ Hub 코드 수정 불필요.
 
 - [x] **Step 1** — WebSocket 서버 + 확장 가능한 필터 파이프라인
 - [x] **Step 2** — [`smilegate-ai/kor_unsmile`](https://huggingface.co/smilegate-ai/kor_unsmile) ONNX 한국어 혐오 발언 분류기
-- [ ] **Step 3** — Ollama / Llama 3 심층 추론 레이어 (풍자·맥락 판단)
-- [ ] 관리자 대시보드 — 격리 큐, 실시간 통계
-- [ ] Docker / Kubernetes 배포 가이드
+- [x] **Step 3** — Ollama LLM 심층 재판단 레이어 (풍자·맥락 판단, `qwen2.5:7b` 기본)
+- [x] **낙관적 브로드캐스트** — Quarantine 메시지 즉시 전송 후 Ollama 비동기 재판단; 결과에 따라 `warn` / `delete` 이벤트 발행
 
 ---
 

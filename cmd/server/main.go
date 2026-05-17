@@ -16,8 +16,6 @@ import (
 func main() {
 	addr := envOr("ADDR", ":8080")
 
-	// Build the filter chain.
-	// Step 3: append filter.NewOllama(...) — Llama 3 deep-reasoning layer
 	unsmile, err := filter.NewUnsmile()
 	if err != nil {
 		slog.Error("unsmile filter init failed", "err", err)
@@ -25,11 +23,11 @@ func main() {
 	}
 	defer unsmile.Close()
 
-	chain := filter.NewChain(
-		unsmile,
-	)
+	ollama := filter.NewOllama()
 
-	h := hub.New(chain)
+	// Two-stage pipeline: unsmile blocks synchronously; ollama re-judges
+	// quarantined messages async after optimistic broadcast.
+	h := hub.New(unsmile, ollama)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

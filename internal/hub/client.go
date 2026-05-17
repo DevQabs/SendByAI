@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,17 +69,23 @@ func (c *Client) readPump() {
 			}
 			break
 		}
+		var content string
 		var in struct {
 			Content string `json:"content"`
 		}
-		if err := json.Unmarshal(raw, &in); err != nil || in.Content == "" {
+		if err := json.Unmarshal(raw, &in); err == nil && in.Content != "" {
+			content = in.Content
+		} else {
+			content = strings.TrimSpace(string(raw))
+		}
+		if content == "" {
 			continue
 		}
 		c.hub.inbound <- &InboundMessage{
 			ClientID: c.id,
 			RoomID:   c.roomID,
 			UserID:   c.userID,
-			Content:  in.Content,
+			Content:  content,
 			At:       time.Now(),
 		}
 	}

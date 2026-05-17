@@ -2,6 +2,8 @@ package hub
 
 import "time"
 
+func timePtr(t time.Time) *time.Time { return &t }
+
 // InboundMessage is a raw message received from a WebSocket client.
 type InboundMessage struct {
 	ClientID string
@@ -23,8 +25,8 @@ type OutboundMessage struct {
 	Type    string    `json:"type"`
 	MsgID   string    `json:"msg_id,omitempty"`
 	UserID  string    `json:"user_id,omitempty"`
-	Content string    `json:"content,omitempty"`
-	At      time.Time `json:"at,omitempty"`
+	Content string     `json:"content,omitempty"`
+	At      *time.Time `json:"at,omitempty"`
 	Reason  string    `json:"reason,omitempty"`
 	Score   float64   `json:"score,omitempty"`
 }

@@ -127,7 +127,7 @@ func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 			MsgID:   newMsgID(),
 			UserID:  result.Message.UserID,
 			Content: result.Message.Content,
-			At:      msg.At,
+			At:      timePtr(msg.At),
 		}
 		h.broadcast(msg.RoomID, out)
 
@@ -150,7 +150,7 @@ func (h *Hub) process(ctx context.Context, msg *InboundMessage) {
 			MsgID:   msgID,
 			UserID:  msg.UserID,
 			Content: msg.Content,
-			At:      msg.At,
+			At:      timePtr(msg.At),
 		})
 		// Immediately warn clients — unsmile already flagged this as suspicious.
 		// Ollama will clear or escalate asynchronously.

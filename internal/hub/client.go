@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -67,11 +68,17 @@ func (c *Client) readPump() {
 			}
 			break
 		}
+		var in struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil || in.Content == "" {
+			continue
+		}
 		c.hub.inbound <- &InboundMessage{
 			ClientID: c.id,
 			RoomID:   c.roomID,
 			UserID:   c.userID,
-			Content:  string(raw),
+			Content:  in.Content,
 			At:       time.Now(),
 		}
 	}
